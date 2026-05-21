@@ -99,17 +99,19 @@ real_strategy_ind = np.array(real_strategy_ind)
 real_account_num = np.array(real_account_num)
 real_account_ind = np.array(real_account_ind)
 
-# 生成模拟策略特征 (500)
-N_SIM_STRATEGY = 500
+# 生成模拟策略特征 (2000)
+N_SIM_STRATEGY = 2000
 sim_strategy_num = []
 sim_strategy_ind = []
 sim_strategy_parent = []  # 记录来自哪个真实策略
+noise_scales = [0.08, 0.12, 0.16, 0.20]  # 多档噪声增加多样性
 
 for i in range(N_SIM_STRATEGY):
     parent_idx = i % len(real_strategy_num)  # 轮流取真实策略作为模板
+    noise_s = noise_scales[i % len(noise_scales)]  # 交替用不同噪声
     n, ind = perturb_features(real_strategy_num[parent_idx],
                                real_strategy_ind[parent_idx],
-                               noise_scale=0.12)
+                               noise_scale=noise_s)
     sim_strategy_num.append(n)
     sim_strategy_ind.append(ind)
     sim_strategy_parent.append(strategy_feats.iloc[parent_idx]['name'])
@@ -117,17 +119,18 @@ for i in range(N_SIM_STRATEGY):
 sim_strategy_num = np.array(sim_strategy_num)
 sim_strategy_ind = np.array(sim_strategy_ind)
 
-# 生成模拟客户特征 (200)
-N_SIM_ACCOUNT = 200
+# 生成模拟客户特征 (1000)
+N_SIM_ACCOUNT = 1000
 sim_account_num = []
 sim_account_ind = []
 sim_account_parent = []
 
 for i in range(N_SIM_ACCOUNT):
     parent_idx = i % len(real_account_num)
+    noise_s = noise_scales[i % len(noise_scales)]
     n, ind = perturb_features(real_account_num[parent_idx],
                                real_account_ind[parent_idx],
-                               noise_scale=0.15)  # 客户噪声稍大（真实客户少）
+                               noise_scale=noise_s)
     sim_account_num.append(n)
     sim_account_ind.append(ind)
     sim_account_parent.append(account_feats.iloc[parent_idx]['name'])
@@ -172,25 +175,39 @@ acct_feat = np.hstack([acct_num_scaled, acct_top5])
 from sklearn.metrics.pairwise import cosine_similarity
 sim_matrix = cosine_similarity(acct_feat, strat_feat)
 
-# 对每个客户: top-1 = 正样本, 随机选 bottom-50% 中的 4 个作为负样本
+# 困难负样本策略:
+# - 正样本: rank-1 (最相似)
+# - 硬负样本: rank-10~60 (相似但不完全匹配，迫使模型学精细决策)
+# - 易负样本: bottom-20% (兜底，防止全部太难导致不收敛)
 match_pairs = []  # list of (client_idx, strategy_idx, is_match)
-N_NEG_PER_POS = 4
+N_NEG_PER_POS = 5        # 每个正样本配 5 个负样本
+N_HARD_NEG = 3            # 其中 3 个是困难负样本
+N_EASY_NEG = 2            # 其中 2 个是易负样本
 
-# 按相似度排序
 strat_ranked = np.argsort(-sim_matrix, axis=1)  # 每个客户对各策略从高到低排序
 
 for ci in range(N_SIM_ACCOUNT):
     pos_si = strat_ranked[ci, 0]  # 最相似 = 正样本
     match_pairs.append((ci, pos_si, 1))
 
-    # 负样本: 从相似度最低的 50% 中随机选
-    bottom_half_start = N_SIM_STRATEGY // 2
-    neg_candidates = strat_ranked[ci, bottom_half_start:]
-    neg_samples = np.random.choice(neg_candidates, size=N_NEG_PER_POS, replace=False)
-    for ns in neg_samples:
+    # 困难负样本: 从 rank-10 到 rank-60 中随机选
+    hard_start, hard_end = 10, min(60, N_SIM_STRATEGY)
+    hard_candidates = strat_ranked[ci, hard_start:hard_end]
+    hard_samples = np.random.choice(hard_candidates, size=N_HARD_NEG, replace=False)
+
+    # 易负样本: 从 bottom-20% 中随机选
+    easy_start = int(N_SIM_STRATEGY * 0.8)
+    easy_candidates = strat_ranked[ci, easy_start:]
+    easy_samples = np.random.choice(easy_candidates, size=N_EASY_NEG, replace=False)
+
+    for ns in hard_samples:
+        match_pairs.append((ci, ns, 0))
+    for ns in easy_samples:
         match_pairs.append((ci, ns, 0))
 
-print(f"  匹配对总数: {len(match_pairs)} (正样本: {N_SIM_ACCOUNT}, 负样本: {N_SIM_ACCOUNT * N_NEG_PER_POS})")
+n_pos = N_SIM_ACCOUNT
+n_neg = N_SIM_ACCOUNT * N_NEG_PER_POS
+print(f"  匹配对总数: {len(match_pairs)} (正样本: {n_pos}, 硬负样本: {n_pos * N_HARD_NEG}, 易负样本: {n_pos * N_EASY_NEG})")
 print(f"  正样本平均相似度: {sim_matrix[np.arange(N_SIM_ACCOUNT), strat_ranked[:, 0]].mean():.4f}")
 
 # ============================================================

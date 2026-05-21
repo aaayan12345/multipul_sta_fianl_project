@@ -100,8 +100,8 @@ print("\n--- 6.3 构建 LSTM Encoder ---")
 LSTM_HIDDEN = 128
 LSTM_LAYERS = 2
 OUTPUT_DIM = 128
-DROPOUT = 0.3
-MAX_SEQ_LEN = 300  # 训练时截断长度
+DROPOUT = 0.4
+MAX_SEQ_LEN = 512  # 训练时截断长度（增大以覆盖更完整的交易节奏）
 
 
 class LSTMEncoder(nn.Module):
@@ -134,9 +134,11 @@ class LSTMEncoder(nn.Module):
 
         self.projection = nn.Sequential(
             nn.Linear(hidden_dim * 2, output_dim),
+            nn.LayerNorm(output_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(output_dim, output_dim),
+            nn.LayerNorm(output_dim),
         )
 
     def forward(self, x, lengths):
@@ -193,11 +195,11 @@ print(f"  max_seq_len={MAX_SEQ_LEN}, dropout={DROPOUT}")
 # ============================================================
 print("\n--- 6.4 训练准备 ---")
 
-MARGIN = 0.5
-BATCH_SIZE = 32
-EPOCHS = 50
-LEARNING_RATE = 0.001
-WEIGHT_DECAY = 1e-5
+MARGIN = 0.2          # 困难负样本下用小 margin，避免 loss 太高
+BATCH_SIZE = 128       # GPU 12G 可以吃更大 batch
+EPOCHS = 200           # 足够长的训练周期
+LEARNING_RATE = 0.0005 # 更低初始 lr，配合长周期
+WEIGHT_DECAY = 1e-4    # 更强的 L2 正则化
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = model.to(device)
@@ -205,7 +207,9 @@ print(f"  设备: {device}")
 
 optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE,
                        weight_decay=WEIGHT_DECAY)
-scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_min=1e-5)
+# WarmRestarts: 每 40 epoch 重启一次，保持探索能力
+scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+    optimizer, T_0=40, T_mult=2, eta_min=1e-6)
 
 criterion = nn.TripletMarginLoss(margin=MARGIN, p=2.0)
 
@@ -295,6 +299,22 @@ def encode_sequence(seq_tensor, max_len=MAX_SEQ_LEN):
 
 
 # ============================================================
+# 6.5 训练准备 (续) — 固定验证集负样本
+# ============================================================
+
+# 为每个 val client 预选固定的负样本策略（消除 val_loss 随机波动）
+val_neg_strategies = {}
+for ci in val_clients:
+    pos_si = pos_pairs_dict[ci]
+    # 固定选 4 个负样本（2 个困难 + 2 个随机）用于整个训练过程的验证
+    neg_pool = list(range(N_STRATEGIES))
+    neg_pool.remove(pos_si)
+    # 随机固定选 4 个
+    val_neg_strategies[ci] = np.random.choice(neg_pool, size=4, replace=False)
+
+print(f"  验证集每个客户固定 4 个负样本 (消除 val_loss 随机性)")
+
+# ============================================================
 # 6.5 训练循环
 # ============================================================
 print("\n--- 6.5 训练 (Triplet Loss) ---")
@@ -303,12 +323,46 @@ print(f"  Epochs={EPOCHS}, Batch={BATCH_SIZE}, Margin={MARGIN}, LR={LEARNING_RAT
 train_history = {'epoch': [], 'train_loss': [], 'val_loss': [], 'val_acc': []}
 
 best_val_loss = float('inf')
+best_val_acc = 0.0
 best_state = None
+best_epoch = 0
+no_improve = 0
+early_stop_patience = 30
+
+
+def prepare_val_batch(client_indices, max_len=MAX_SEQ_LEN):
+    """验证用：使用固定负样本"""
+    anchor_seqs, pos_seqs, neg_seqs = [], [], []
+
+    for ci in client_indices:
+        a_seq = sim_acct_tensors[ci]
+        p_seq = sim_strat_tensors[pos_pairs_dict[ci]]
+        # 使用固定的负样本
+        n_idx = val_neg_strategies[ci][np.random.randint(4)]
+        n_seq = sim_strat_tensors[n_idx]
+
+        anchor_seqs.append(a_seq[:max_len])
+        pos_seqs.append(p_seq[:max_len])
+        neg_seqs.append(n_seq[:max_len])
+
+    a_lengths = torch.tensor([len(s) for s in anchor_seqs], dtype=torch.long)
+    p_lengths = torch.tensor([len(s) for s in pos_seqs], dtype=torch.long)
+    n_lengths = torch.tensor([len(s) for s in neg_seqs], dtype=torch.long)
+
+    anchor_pad = pad_sequence(anchor_seqs, batch_first=True, padding_value=PAD_IDX).to(device)
+    pos_pad = pad_sequence(pos_seqs, batch_first=True, padding_value=PAD_IDX).to(device)
+    neg_pad = pad_sequence(neg_seqs, batch_first=True, padding_value=PAD_IDX).to(device)
+
+    return (anchor_pad, a_lengths.to(device),
+            pos_pad, p_lengths.to(device),
+            neg_pad, n_lengths.to(device))
+
 
 for epoch in range(1, EPOCHS + 1):
     # ---- 训练 ----
     model.train()
     train_loss = 0.0
+    n_batches = 0
     np.random.shuffle(train_clients)
 
     for b_start in range(0, len(train_clients), BATCH_SIZE):
@@ -328,8 +382,9 @@ for epoch in range(1, EPOCHS + 1):
         optimizer.step()
 
         train_loss += loss.item()
+        n_batches += 1
 
-    train_loss /= max(1, len(train_clients) // BATCH_SIZE)
+    train_loss /= max(1, n_batches)
     scheduler.step()
 
     # ---- 验证 ----
@@ -337,12 +392,13 @@ for epoch in range(1, EPOCHS + 1):
     val_loss = 0.0
     val_correct = 0
     val_total = 0
+    n_val_batches = 0
 
     with torch.no_grad():
         for b_start in range(0, len(val_clients), BATCH_SIZE):
             batch_clients = val_clients[b_start:b_start + BATCH_SIZE]
 
-            a_x, a_l, p_x, p_l, n_x, n_l = prepare_batch(batch_clients, training=False)
+            a_x, a_l, p_x, p_l, n_x, n_l = prepare_val_batch(batch_clients)
 
             anchor_vec = model(a_x, a_l)
             pos_vec = model(p_x, p_l)
@@ -350,14 +406,14 @@ for epoch in range(1, EPOCHS + 1):
 
             loss = criterion(anchor_vec, pos_vec, neg_vec)
             val_loss += loss.item()
+            n_val_batches += 1
 
-            # 准确率: d(anchor, pos) < d(anchor, neg) ?
             d_pos = torch.norm(anchor_vec - pos_vec, p=2, dim=1)
             d_neg = torch.norm(anchor_vec - neg_vec, p=2, dim=1)
             val_correct += (d_pos < d_neg).sum().item()
             val_total += len(d_pos)
 
-    val_loss /= max(1, len(val_clients) // BATCH_SIZE)
+    val_loss /= max(1, n_val_batches)
     val_acc = val_correct / max(1, val_total)
 
     train_history['epoch'].append(epoch)
@@ -365,19 +421,48 @@ for epoch in range(1, EPOCHS + 1):
     train_history['val_loss'].append(val_loss)
     train_history['val_acc'].append(val_acc)
 
-    # 保存最佳模型
-    if val_loss < best_val_loss:
+    # Early stopping + 保存最佳模型
+    improved = False
+    if val_loss < best_val_loss - 1e-4:
         best_val_loss = val_loss
         best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+        best_epoch = epoch
+        improved = True
+    if val_acc > best_val_acc:
+        best_val_acc = val_acc
 
-    if epoch % 5 == 0 or epoch == 1 or epoch == EPOCHS:
+    if improved:
+        no_improve = 0
+    else:
+        no_improve += 1
+
+    # 日志
+    if epoch % 10 == 1 or epoch == 1 or epoch == EPOCHS or improved:
+        marker = " *" if improved else ""
         print(f"  Epoch {epoch:3d}/{EPOCHS} | "
               f"train_loss={train_loss:.4f} | "
               f"val_loss={val_loss:.4f} | "
               f"val_acc={val_acc:.3f} | "
-              f"lr={scheduler.get_last_lr()[0]:.6f}")
+              f"lr={scheduler.get_last_lr()[0]:.2e}{marker}")
 
-print(f"\n  最佳 val_loss: {best_val_loss:.4f}")
+    # 每 40 epoch 保存 checkpoint
+    if epoch % 40 == 0:
+        import os
+        os.makedirs('models', exist_ok=True)
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': {k: v.cpu().clone() for k, v in model.state_dict().items()},
+            'optimizer_state_dict': optimizer.state_dict(),
+            'val_loss': val_loss,
+            'val_acc': val_acc,
+        }, f'models/lstm_encoder_epoch{epoch}.pt')
+
+    # Early stop
+    if no_improve >= early_stop_patience:
+        print(f"\n  Early stopping at epoch {epoch} (no improvement for {early_stop_patience} epochs)")
+        break
+
+print(f"\n  最佳模型: Epoch {best_epoch} | val_loss={best_val_loss:.4f} | best_val_acc={best_val_acc:.3f}")
 
 # 加载最佳模型
 model.load_state_dict(best_state)
