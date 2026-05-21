@@ -83,6 +83,38 @@ def load_strategy_from_file2():
 
 
 # ============================================================
+# 1.3 加载新增CSV格式策略
+# ============================================================
+
+def load_strategy_from_csv(filepath, strategy_name, source_label):
+    """加载CSV格式的策略交易记录（带ETF策略1/2、朝花夕拾等）
+    列映射: product_id→strategy_name, symbol→stock_code, side→action,
+            qty→volume, trade_date+trade_time→datetime
+    """
+    df = pd.read_csv(filepath, encoding='utf-8-sig')
+
+    df['datetime'] = pd.to_datetime(df['trade_time'])  # trade_time已是完整datetime字符串
+    df['stock_code'] = (df['symbol'].astype(str)
+                        .str.replace('.XSHE', '', regex=False)
+                        .str.replace('.XSHG', '', regex=False)
+                        .str.replace('.SZSE', '', regex=False)
+                        .str.replace('.SHSE', '', regex=False)
+                        .str.strip())
+    df['action'] = df['side'].str.upper().str.strip()
+    df['volume'] = pd.to_numeric(df['qty'], errors='coerce').abs()
+    df['price'] = pd.to_numeric(df['price'], errors='coerce')
+    df['amount'] = pd.to_numeric(df['amount'], errors='coerce').abs()
+    df['strategy_name'] = strategy_name
+    df['source'] = source_label
+
+    # 只保留实际买卖
+    df = df[df['action'].isin(['BUY', 'SELL'])].copy()
+
+    return df[['datetime', 'stock_code', 'action', 'volume', 'price', 'amount',
+               'strategy_name', 'source']]
+
+
+# ============================================================
 # 2. 加载模拟账户
 # ============================================================
 
@@ -196,6 +228,13 @@ def main():
     s2 = load_strategy_from_file2()
     strategies_raw = pd.concat([s1, s2], ignore_index=True)
     strategies = standardize_strategy_df(strategies_raw)
+
+    # 加载新增CSV格式策略 (3个)
+    print("加载新增CSV策略...")
+    s3 = load_strategy_from_csv('带ETF的策略1.csv', '国证2000ETF增强', '新增ETF')
+    s4 = load_strategy_from_csv('带ETF策略2.csv', '创业板300ETF增强', '新增ETF')
+    s5 = load_strategy_from_csv('朝花夕拾策略.csv', '朝花夕拾策略', '新增择时')
+    strategies = pd.concat([strategies, s3, s4, s5], ignore_index=True)
 
     # 加载账户
     print("加载账户数据...")
