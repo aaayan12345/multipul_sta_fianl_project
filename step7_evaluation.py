@@ -49,9 +49,9 @@ print(f"  训练标签对: {len(train_pairs)}")
 # ============================================================
 # 7.2 特征列定义
 # ============================================================
-num_cols = ['turnover', 'holding_period_days', 'concentration_hhi',
-            'buy_sell_symmetry', 'volatility_pref']
 ind_cols = [c for c in strategy_feats.columns if c.startswith('ind_')]
+num_cols = [c for c in strategy_feats.columns
+            if c not in ['name'] and not c.startswith('ind_')]
 ALL_FEAT_COLS = num_cols + ind_cols
 
 # ============================================================
@@ -173,7 +173,7 @@ print(f"    Phase 2 (LSTM):  mean={sim_p2.mean():.4f}, std={sim_p2.std():.4f}, "
 print("\n" + "=" * 60)
 print("--- 7.6 SHAP 特征归因 ---")
 
-# 在模拟数据上：用特征预测"是否匹配"，再用 SHAP 解释
+# 在模拟数据上：用扩展特征预测弱监督伪标签，再用 SHAP 解释
 # 为每个 (account, strategy) 对构造特征：特征差的绝对值 + 特征积（交互）
 
 sim_strat_feat_mat = sim_strat_feats[ALL_FEAT_COLS].values.astype(np.float64)

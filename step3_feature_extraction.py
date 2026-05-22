@@ -1,19 +1,36 @@
 """
-Step 3: Feature Extraction — 6-dim trading style features
+Step 3: Feature Extraction — weak-supervision trading style features
 Features:
-  F1: Industry preference distribution (31-dim probability vector)
+  F1: Industry preference distribution
   F2: Annualized turnover rate
   F3: Average holding period (days, FIFO matched)
   F4: Holding concentration (avg HHI over time)
   F5: Buy-sell symmetry (0-1, 0.5=balanced)
-  F6: Volatility preference (weighted avg of stock-level price volatility)
+  F6: Volatility preference (weighted avg stock-level price CoV)
+  F7: Realized return preference (FIFO matched sell return)
+  F8: Max drawdown preference (approximate position-cost equity curve)
+  F9: Market state exposure (trade-amount weighted bull/flat/bear score)
+  F10: Trade interval (average days between adjacent trades)
 """
 import pandas as pd
 import numpy as np
 from collections import deque, defaultdict
 import json
 import sys
+from pathlib import Path
 sys.stdout.reconfigure(encoding='utf-8')
+
+NUMERIC_FEATURES = [
+    'turnover',
+    'holding_period_days',
+    'concentration_hhi',
+    'buy_sell_symmetry',
+    'volatility_pref',
+    'realized_return_pref',
+    'max_drawdown_pref',
+    'market_state_exposure',
+    'trade_interval_days',
+]
 
 # ============================================================
 # 1. Load Data
@@ -22,16 +39,39 @@ print("=" * 60)
 print("Step 3: Feature Extraction")
 print("=" * 60)
 
-strategies = pd.read_csv('clean_strategies.csv')
-accounts = pd.read_csv('clean_accounts.csv')
-industry_map = pd.read_csv('stock_industry_mapping.csv')
+strategies = pd.read_csv('clean_strategies.csv', dtype={'stock_code': str})
+accounts = pd.read_csv('clean_accounts.csv', dtype={'stock_code': str})
+
+
+def load_industry_mapping():
+    """Prefer manually reviewed mapping when present.
+
+    Blank stock names are valid as long as the stock code exists. If
+    review_industry is filled, it overrides the original industry column.
+    """
+    review_path = Path('stock_industry_mapping_review.csv')
+    mapping_path = review_path if review_path.exists() else Path('stock_industry_mapping.csv')
+    df = pd.read_csv(mapping_path, dtype={'stock_code': str}, encoding='utf-8-sig')
+    df['stock_code'] = df['stock_code'].astype(str).str.zfill(6)
+    if 'review_industry' in df.columns:
+        reviewed = df['review_industry'].fillna('').astype(str).str.strip()
+        df['industry_final'] = np.where(reviewed.ne(''), reviewed, df['industry'])
+    else:
+        df['industry_final'] = df['industry']
+    print(f"Using industry mapping: {mapping_path} ({len(df)} rows)")
+    return df
+
+
+industry_map = load_industry_mapping()
+strategies['stock_code'] = strategies['stock_code'].astype(str).str.zfill(6)
+accounts['stock_code'] = accounts['stock_code'].astype(str).str.zfill(6)
 
 # Parse dates
 strategies['date'] = pd.to_datetime(strategies['datetime'])
 accounts['date'] = pd.to_datetime(accounts['datetime'])
 
 # Build industry lookup
-code2ind = dict(zip(industry_map['stock_code'], industry_map['industry']))
+code2ind = dict(zip(industry_map['stock_code'], industry_map['industry_final']))
 all_industries = sorted(set(code2ind.values()))
 print(f"\nTotal industries: {len(all_industries)}")
 print(f"Strategies: {strategies['strategy_name'].nunique()}")
@@ -171,6 +211,110 @@ def compute_volatility_pref(df):
     return float(sum(v * w for v, w in vol_records) / total_w)
 
 
+def compute_realized_return_pref(df):
+    """F7: Amount-weighted realized return via FIFO matching."""
+    matched_returns = []
+
+    for code, group in df.groupby('stock_code'):
+        group = group.sort_values('date')
+        queue = deque()  # (buy_price, remaining_volume)
+
+        for _, row in group.iterrows():
+            price = float(row['price'])
+            volume = float(row['volume'])
+            if price <= 0 or volume <= 0:
+                continue
+            if row['action'] == 'BUY':
+                queue.append((price, volume))
+                continue
+
+            remaining = volume
+            while remaining > 0 and queue:
+                buy_price, buy_vol = queue[0]
+                matched = min(buy_vol, remaining)
+                if buy_price > 0:
+                    ret = (price - buy_price) / buy_price
+                    matched_returns.append((np.clip(ret, -1.0, 3.0), matched * price))
+                if buy_vol <= remaining:
+                    queue.popleft()
+                else:
+                    queue[0] = (buy_price, buy_vol - matched)
+                remaining -= matched
+
+    if not matched_returns:
+        return 0.0
+    total_w = sum(w for _, w in matched_returns)
+    return float(sum(r * w for r, w in matched_returns) / max(total_w, 1e-9))
+
+
+def compute_max_drawdown_pref(df):
+    """F8: Approximate max drawdown on a position-cost equity curve."""
+    positions = defaultdict(lambda: {'volume': 0.0, 'price': 0.0})
+    equity_curve = []
+
+    for _, row in df.sort_values('date').iterrows():
+        code = row['stock_code']
+        price = float(row['price'])
+        volume = float(row['volume'])
+        if price <= 0 or volume <= 0:
+            continue
+
+        pos = positions[code]
+        if row['action'] == 'BUY':
+            new_vol = pos['volume'] + volume
+            pos['price'] = (pos['price'] * pos['volume'] + price * volume) / max(new_vol, 1e-9)
+            pos['volume'] = new_vol
+        else:
+            pos['volume'] = max(0.0, pos['volume'] - volume)
+            pos['price'] = price
+
+        equity = sum(v['volume'] * v['price'] for v in positions.values())
+        if equity > 0:
+            equity_curve.append(equity)
+
+    if len(equity_curve) < 2:
+        return 0.0
+    curve = np.array(equity_curve, dtype=np.float64)
+    peaks = np.maximum.accumulate(curve)
+    drawdowns = 1.0 - curve / np.maximum(peaks, 1e-9)
+    return float(np.clip(np.max(drawdowns), 0.0, 1.0))
+
+
+def compute_market_state_exposure(df):
+    """F9: Trade-weighted exposure to recent market state."""
+    daily_price = df.pivot_table(index='date', columns='stock_code', values='price', aggfunc='last')
+    if len(daily_price) < 2:
+        return 0.0
+
+    daily_ret = daily_price.sort_index().pct_change(fill_method=None).replace([np.inf, -np.inf], np.nan)
+    market_ret = daily_ret.mean(axis=1).rolling(5, min_periods=1).mean()
+    market_state = pd.cut(
+        market_ret,
+        bins=[-np.inf, -0.005, 0.005, np.inf],
+        labels=[-1.0, 0.0, 1.0],
+    ).astype(float)
+
+    weighted = []
+    for _, row in df.iterrows():
+        state = market_state.reindex([row['date']], method='ffill').iloc[0]
+        if pd.notna(state):
+            weighted.append((float(state), float(row['amount'])))
+
+    if not weighted:
+        return 0.0
+    total_w = sum(w for _, w in weighted)
+    return float(sum(s * w for s, w in weighted) / max(total_w, 1e-9))
+
+
+def compute_trade_interval(df):
+    """F10: Average days between adjacent trades."""
+    dates = df.sort_values('date')['date'].drop_duplicates()
+    if len(dates) < 2:
+        return 0.0
+    intervals = dates.diff().dt.days.dropna()
+    return float(intervals.mean()) if len(intervals) else 0.0
+
+
 # ============================================================
 # 3. Compute All Features
 # ============================================================
@@ -183,6 +327,10 @@ def compute_all_features(df):
         'concentration_hhi': compute_concentration(df),
         'buy_sell_symmetry': compute_buy_sell_symmetry(df),
         'volatility_pref': compute_volatility_pref(df),
+        'realized_return_pref': compute_realized_return_pref(df),
+        'max_drawdown_pref': compute_max_drawdown_pref(df),
+        'market_state_exposure': compute_market_state_exposure(df),
+        'trade_interval_days': compute_trade_interval(df),
     }
 
 
@@ -196,7 +344,8 @@ for sname in sorted(strategies['strategy_name'].unique()):
     print(f"  [{sname}]")
     print(f"    turnover={feats['turnover']:.3f}, holding={feats['holding_period_days']:.1f}d, "
           f"HHI={feats['concentration_hhi']:.4f}, buy_ratio={feats['buy_sell_symmetry']:.3f}, "
-          f"vol={feats['volatility_pref']:.5f}")
+          f"vol={feats['volatility_pref']:.5f}, ret={feats['realized_return_pref']:.4f}, "
+          f"mdd={feats['max_drawdown_pref']:.4f}, mkt={feats['market_state_exposure']:.3f}")
 
 # --- Accounts ---
 print("\n--- Account Features ---")
@@ -208,7 +357,8 @@ for aid in sorted(accounts['account_id'].unique()):
     print(f"  [Account {aid}]")
     print(f"    turnover={feats['turnover']:.3f}, holding={feats['holding_period_days']:.1f}d, "
           f"HHI={feats['concentration_hhi']:.4f}, buy_ratio={feats['buy_sell_symmetry']:.3f}, "
-          f"vol={feats['volatility_pref']:.5f}")
+          f"vol={feats['volatility_pref']:.5f}, ret={feats['realized_return_pref']:.4f}, "
+          f"mdd={feats['max_drawdown_pref']:.4f}, mkt={feats['market_state_exposure']:.3f}")
 
 # ============================================================
 # 4. Save Results
@@ -219,8 +369,7 @@ def flatten_features(feats_dict, prefix='entity'):
     rows = []
     for name, feats in feats_dict.items():
         row = {'name': name}
-        for k in ['turnover', 'holding_period_days', 'concentration_hhi',
-                   'buy_sell_symmetry', 'volatility_pref']:
+        for k in NUMERIC_FEATURES:
             row[k] = feats[k]
         for ind in all_industries:
             row[f'ind_{ind}'] = feats['industry_pref'].get(ind, 0.0)
@@ -253,8 +402,7 @@ print("=" * 60)
 for label, feats_dict in [("Strategy", strategy_features), ("Account", account_features)]:
     print(f"\n--- {label} ---")
     all_feats = list(feats_dict.values())
-    for key in ['turnover', 'holding_period_days', 'concentration_hhi',
-                 'buy_sell_symmetry', 'volatility_pref']:
+    for key in NUMERIC_FEATURES:
         vals = [f[key] for f in all_feats]
         print(f"  {key:25s}: mean={np.mean(vals):.4f}, std={np.std(vals):.4f}, "
               f"min={np.min(vals):.4f}, max={np.max(vals):.4f}")

@@ -1,9 +1,10 @@
-# 证券投资策略与客户交易画像精准匹配研究
+# 小样本弱监督下的证券投资策略与客户交易画像匹配研究
 
 ## Phase 2: 深度学习辅助赛道
 
-基于 Word2Vec Token Embedding + LSTM Encoder + 对比学习（Contrastive Learning），
-将 3 个模拟客户账户与 34 个量化策略进行精准匹配。
+本项目目标不是在小样本下证明“精准匹配”已经成立，而是构建一条可行的弱监督匹配路线：
+先用可解释交易画像刻画客户与策略风格，再用多维交易 token + LSTM 对比学习作为辅助排序器，
+最终输出候选策略排名，供人工校验、风险约束和后续真实标签迭代。
 
 ---
 
@@ -32,6 +33,7 @@ project/
 │── clean_strategies.csv               # [产出 Step1] 清洗后策略交易记录
 │── clean_accounts.csv                 # [产出 Step1] 清洗后账户交易记录
 │── stock_industry_mapping.csv         # [产出 Step2] 股票代码→申万行业映射
+│── stock_industry_mapping_review.csv  # [人工校验] review_industry 覆盖原 industry
 │── strategy_features.csv/json         # [产出 Step3] 34 策略特征向量
 │── account_features.csv/json          # [产出 Step3] 3 账户特征向量
 │
@@ -119,11 +121,11 @@ project/
 
 ---
 
-### Step 3 — 6 维交易风格特征提取
+### Step 3 — 扩展交易风格特征提取
 
-**做什么**：把每个策略和账户的交易行为抽象为 6 个可量化的数值特征，构建固定维度的"交易画像向量"，作为后续深度学习的先验。
+**做什么**：把每个策略和账户的交易行为抽象为行业偏好 + 9 个可量化数值特征，构建固定维度的交易画像向量，作为弱监督匹配的主干。
 
-**6 个特征**：
+**特征集合**：
 
 | 特征 | 维度 | 捕捉什么 | 计算方式 |
 |------|------|---------|---------|
@@ -133,8 +135,12 @@ project/
 | F4 持股集中度 | 1 | 分散还是集中 | 时序仓位 HHI 指数均值 |
 | F5 买卖对称性 | 1 | 建仓还是清仓 | 总买入 / (总买入+总卖出)，0.5=平衡 |
 | F6 波动偏好 | 1 | 喜欢高波动还是低波动 | 各股价格变异系数 CoV 加权平均 |
+| F7 实现收益偏好 | 1 | 交易是否偏向盈利/亏损兑现 | FIFO 匹配卖出，按成交金额加权收益 |
+| F8 回撤承受风格 | 1 | 持仓曲线的回撤暴露 | 用成交价近似持仓市值曲线，计算最大回撤 |
+| F9 市场状态暴露 | 1 | 偏好顺势/震荡/逆势交易 | 个体交易股票等权 5 日价格变化状态，加权平均 |
+| F10 交易间隔 | 1 | 交易节奏疏密 | 相邻交易日期平均间隔 |
 
-**最终向量**：每个策略/账户 → **36 维向量**（31 行业概率 + 5 数值特征）
+**最终向量**：每个策略/账户 → **40 维向量**（31 行业概率 + 9 数值特征）
 
 **三个账户画像**：
 
@@ -158,30 +164,25 @@ project/
 
 ---
 
-### Step 4 — Token 构建 + Word2Vec 预训练
+### Step 4 — 多维交易 Token + Word2Vec 预训练
 
 **状态**：✅ 已完成
 
 **做什么**：
-- 每条交易记录 → `{行业}_{BUY/SELL}_{S/M/L}` token，金额分档按策略内部三分位数
-- 词表共 **221 个 token**，覆盖 31 个申万行业 × 2 方向 × 3 档金额
+- 每条交易记录 → `{行业}_{BUY/SELL}_A{金额}_H{持仓}_T{换手}_R{收益}_D{回撤}_M{市场状态}` token
+- 金额按实体内三分位数分桶；持仓周期、换手、实现收益、运行回撤、市场状态分别离散化为风格桶
+- 这样 token 不再只表达“哪个行业买卖多少钱”，还包含交易节奏、盈利/亏损兑现、回撤和市场环境
 - PyTorch 从零实现 Skip-gram + 负采样 Word2Vec（非 gensim，避免 Windows C++ 编译器依赖）
 - 64 维词向量，窗口=5，负采样=5，30 epochs，Adam lr=0.002
-- 训练集 337,050 对正样本，loss 从 3.43 → 1.08
 
-**语义验证**（余弦相似度查询）：
-
-| 查询 Token | Top-2 相似 Token |
-|-----------|-----------------|
-| `电子_BUY_L` | 电子_SELL_L (0.92), 计算机_BUY_L (0.78) |
-| `银行_BUY_S` | 银行_SELL_S (0.89), 非银金融_BUY_S (0.75) |
-| `食品饮料_SELL_M` | 食品饮料_BUY_M (0.85), 商贸零售_SELL_M (0.72) |
+**语义验证**：训练后脚本会从当前词表中抽取样例 token，输出 Top-N 余弦相似 token。
+由于 token 现在包含多维风格桶，词表大小会随人工校验行业和交易风格分布变化。
 
 **产出文件**：
 | 文件 | 内容 |
 |------|------|
-| `token_vocab.json` | Token→ID 映射 (221 tokens) |
-| `word2vec_embeddings.npy` | 221×64 词向量矩阵 |
+| `token_vocab.json` | Token→ID 映射（多维 token，词表大小动态生成） |
+| `word2vec_embeddings.npy` | vocab_size×64 词向量矩阵 |
 | `tokenized_sequences.pkl` | 各策略/账户的 token ID 序列 |
 | `token_sequences.csv` | 可读版序列 |
 | `word2vec_model.pt` | PyTorch 模型权重 |
@@ -195,26 +196,26 @@ project/
 **状态**：✅ 已完成
 
 **做什么**：
-- 基于 34 策略 + 3 账户的真实特征分布，扰动生成模拟数据用于对比学习训练
+- 基于真实策略 + 3 账户的扩展特征分布，扰动生成模拟数据用于对比学习训练
 - **特征扰动**：数值特征用对数正态噪声（σ=0.12~0.15），行业偏好用 Dirichlet 噪声
 - **序列生成**：Block bootstrap 从真实序列采样 token 块（3~12 tokens），按行业偏好加权拼接，并微调 BUY/SELL 比例
-- **匹配标签**：余弦相似度 top-1 作为正样本，bottom-50% 随机 4 个作为负样本（200 正 + 800 负 = 1000 对）
+- **弱监督伪标签**：用扩展交易画像的余弦相似度生成正负样本；top-1 作为正样本，困难负样本和易负样本混合采样。该标签用于训练辅助排序器，不代表真实客户适配标签。
 
 **生成规模**：
 
 | 实体 | 数量 | 序列长度 (mean/min/max) |
 |------|------|------------------------|
-| 模拟策略 | 500 | 1,344 / 542 / 2,867 |
-| 模拟客户 | 200 | 1,105 / 407 / 1,610 |
+| 模拟策略 | 2000 | 1,344 / 542 / 2,867 |
+| 模拟客户 | 1000 | 1,105 / 407 / 1,610 |
 | 正样本平均相似度 | — | 0.894 |
 
 **产出文件**：
 | 文件 | 内容 |
 |------|------|
-| `simulated_strategies_features.csv` | 500 模拟策略 36 维特征 |
-| `simulated_accounts_features.csv` | 200 模拟客户 36 维特征 |
+| `simulated_strategies_features.csv` | 2000 模拟策略扩展特征 |
+| `simulated_accounts_features.csv` | 1000 模拟客户扩展特征 |
 | `simulated_data.pkl` | 完整模拟数据 (特征 + 序列 + 匹配标签) |
-| `train_pairs.csv` | 1000 条训练标签 (client_idx, strategy_idx, is_match) |
+| `train_pairs.csv` | 弱监督伪标签 (client_idx, strategy_idx, is_match) |
 | `simulated_sequences.csv` | 模拟 token 序列 |
 
 **脚本**：`step5_simulate_data.py`
@@ -226,12 +227,12 @@ project/
 **状态**：✅ 已完成
 
 **做什么**：
-- 构建序列编码器：`Word2Vec Embedding(221×64) → BiLSTM(2层, hidden=128) → Mean Pooling → Linear(256→128) → L2 归一化`
-- 总参数 657,536，Word2Vec 预训练权重初始化 Embedding 层
+- 构建序列编码器：`Word2Vec Embedding(vocab_size×64) → BiLSTM(2层, hidden=128) → Mean Pooling → Linear(256→128) → L2 归一化`
+- 参数量随词表大小变化，Word2Vec 预训练权重初始化 Embedding 层
 - 对比学习 Triplet Loss：`max(0, d(anchor, pos) - d(anchor, neg) + 0.5)`
-- 训练时随机截取 300-token 子序列（数据增强）
-- 50 epochs, batch=32, Adam lr=0.001, CosineAnnealing 调度
-- 训练集 160 客户，验证集 40 客户
+- 训练时随机截取 512-token 子序列（数据增强）
+- 200 epochs, batch=128, Adam lr=0.0005, CosineAnnealingWarmRestarts 调度
+- 训练集/验证集按模拟客户 80/20 划分
 
 **训练结果**：最佳 val_loss=0.301, val_acc 最高 92.5% (Epoch 40)
 
@@ -253,10 +254,11 @@ project/
 **状态**：✅ 已完成
 
 **做什么**：
-- **Phase 1 Baseline**（队友并行进行）：36 维特征余弦相似度匹配，作为对照基线
+- **Phase 1 Baseline**：40 维扩展特征余弦相似度匹配，作为对照基线
 - **Phase 2 深度学习**：LSTM 128 维向量余弦相似度匹配
 - **两阶段对比**：Spearman 秩相关、Top-K 重叠率、排名变化分析
-- **SHAP 归因**：在 1000 对模拟数据上训练 XGBoost，用 SHAP TreeExplainer 解释特征贡献
+- **SHAP 归因**：在弱监督伪标签上训练 XGBoost，用 SHAP TreeExplainer 解释“规则生成标签”的特征贡献
+- **结论边界**：当前评估用于检验方法链路和候选排序稳定性，不能替代真实客户反馈、收益回撤表现或适当性标签验证
 
 **关键发现**：
 
@@ -266,7 +268,7 @@ project/
 | 相似度标准差 | 0.17 | 0.60 |
 | Spearman ρ (A/B/C) | — | 0.72 / 0.40 / 0.44 |
 
-**SHAP Top-5 驱动特征**：持仓周期 > 集中度 > 买卖对称性 > 换手率 > 波动偏好（行业偏好贡献极低）
+**SHAP 解释口径**：SHAP 解释的是弱监督伪标签的生成逻辑。扩展后重点观察持仓周期、换手率、实现收益、最大回撤、市场状态、集中度和行业偏好的相对贡献。
 
 **综合推荐** (Phase 1 + Phase 2 平均排名)：
 
@@ -290,6 +292,13 @@ project/
 
 ---
 
+## 方法边界与可行路线
+
+- 当前数据只有 3 个模拟客户账户和少量策略，因此模型目标是候选排序，不是直接证明真实投资适配。
+- 行业映射优先读取 `stock_industry_mapping_review.csv`；如果存在 `review_industry` 且非空，则覆盖原始 `industry`。股票名为空但股票代码存在时保留，不作为无效记录。
+- 深度学习部分使用弱监督伪标签训练，核心价值是学习交易序列风格相似性；最终推荐仍需结合可解释特征、风险等级、收益回撤约束和人工校验。
+- 后续若获得真实客户选择、满意度、持有后收益/回撤或人工专家标注，可直接替换伪标签，升级为监督学习排序。
+
 ## 技术栈
 
 - **数据**：pandas, numpy
@@ -305,15 +314,15 @@ project/
 
 ```bash
 # Step 1-3: 数据准备
-python step1_data_loader.py
-python step2_industry_mapping.py    # 需要 DeepSeek API key
-python step3_feature_extraction.py
+conda run -n stock python step1_data_loader.py
+conda run -n stock python step2_industry_mapping.py    # 需要 DeepSeek API key
+conda run -n stock python step3_feature_extraction.py
 
 # Step 4-7: 模型训练与评估
-python step4_word2vec_pretrain.py
-python step5_simulate_data.py
-python step6_lstm_contrastive.py
-python step7_evaluation.py
+conda run -n stock python step4_word2vec_pretrain.py
+conda run -n stock python step5_simulate_data.py
+conda run -n stock python step6_lstm_contrastive.py
+conda run -n stock python step7_evaluation.py
 ```
 
 ## Phase 说明

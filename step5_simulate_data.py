@@ -36,10 +36,10 @@ token2id = vocab['token2id']
 id2token = {int(k): v for k, v in vocab['id2token'].items()}
 VOCAB_SIZE = len(token2id)
 
-# 特征列 (数值型)
-num_cols = ['turnover', 'holding_period_days', 'concentration_hhi',
-            'buy_sell_symmetry', 'volatility_pref']
+# 特征列: 自动纳入 Step 3 输出的所有数值风格特征
 ind_cols = [c for c in strategy_feats.columns if c.startswith('ind_')]
+num_cols = [c for c in strategy_feats.columns
+            if c not in ['name'] and not c.startswith('ind_')]
 ALL_INDUSTRIES = [c.replace('ind_', '') for c in ind_cols]
 
 print(f"  真实策略: {len(strategy_feats)}, 真实账户: {len(account_feats)}")
@@ -60,18 +60,35 @@ def extract_features(df_row):
 def perturb_features(num_feat, ind_feat, noise_scale=0.15):
     """
     扰动特征向量:
-    - 数值特征: 乘性对数正态噪声 (保持正值)
-    - 行业偏好: Dirichlet 噪声 (保持和为1)
+    - 非负尺度特征: 乘性对数正态噪声
+    - 可正可负特征: 加性正态噪声
+    - 行业偏好: Dirichlet 噪声
     """
-    # 数值特征: 对数正态扰动
-    noise = np.exp(np.random.normal(0, noise_scale, len(num_feat)))
-    new_num = num_feat * noise
-    # 约束范围 [0.001, 200] (避免极端值)
-    new_num = np.clip(new_num, 0.001, 200.0)
+    new_num = num_feat.astype(np.float64).copy()
+    for j, col in enumerate(num_cols):
+        value = float(num_feat[j])
+        if col in ['realized_return_pref', 'market_state_exposure']:
+            new_num[j] = value + np.random.normal(0, noise_scale * 0.25)
+        else:
+            new_num[j] = value * np.exp(np.random.normal(0, noise_scale))
 
-    # 行业偏好: Dirichlet 扰动
-    alpha = ind_feat * (1.0 / noise_scale)  # 集中度参数
-    alpha = np.maximum(alpha, 0.01)  # 确保正值
+        if col == 'buy_sell_symmetry':
+            new_num[j] = np.clip(new_num[j], 0.0, 1.0)
+        elif col == 'concentration_hhi':
+            new_num[j] = np.clip(new_num[j], 0.0, 1.0)
+        elif col == 'volatility_pref':
+            new_num[j] = np.clip(new_num[j], 0.0, 2.0)
+        elif col == 'realized_return_pref':
+            new_num[j] = np.clip(new_num[j], -1.0, 3.0)
+        elif col == 'max_drawdown_pref':
+            new_num[j] = np.clip(new_num[j], 0.0, 1.0)
+        elif col == 'market_state_exposure':
+            new_num[j] = np.clip(new_num[j], -1.0, 1.0)
+        else:
+            new_num[j] = np.clip(new_num[j], 0.001, 300.0)
+
+    alpha = ind_feat * (1.0 / noise_scale)
+    alpha = np.maximum(alpha, 0.01)
     new_ind = dirichlet.rvs(alpha, size=1)[0]
 
     return new_num, new_ind
@@ -156,8 +173,8 @@ scaler = StandardScaler().fit(all_num)
 strat_num_scaled = scaler.transform(sim_strategy_num)
 acct_num_scaled = scaler.transform(sim_account_num)
 
-# 用数值特征 + 行业偏好前 5 维的余弦距离
-# (用 5 个数值 + 前 5 大行业概率 作为粗筛)
+# 用扩展数值风格特征 + 行业偏好前 5 维的余弦距离
+# 这是弱监督伪标签，不是真实客户适配标签
 top_indices = np.argsort(-sim_strategy_ind, axis=1)[:, :5]
 strat_top5 = np.zeros((N_SIM_STRATEGY, 5))
 for i in range(N_SIM_STRATEGY):
