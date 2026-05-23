@@ -1,0 +1,54 @@
+{
+  "run_timestamp": "20260524_011112",
+  "model": {
+    "architecture": "Word2Vec_Embedding + BiLSTM + MeanPooling + Projection",
+    "vocab_size": 9527,
+    "embed_dim": 64,
+    "hidden_dim": 128,
+    "output_dim": 128,
+    "num_layers": 2,
+    "dropout": 0.25,
+    "max_seq_len": 512,
+    "pad_idx": 9527,
+    "total_params": 1253632,
+    "trainable_params": 1253632
+  },
+  "training": {
+    "loss": "TripletMarginLoss",
+    "margin": 0.4,
+    "batch_size": 128,
+    "epochs": 81,
+    "max_epochs": 200,
+    "learning_rate": 0.0005,
+    "weight_decay": 0.0001,
+    "optimizer": "Adam",
+    "grad_clip_norm": 1.0,
+    "scheduler": "ReduceLROnPlateau",
+    "scheduler_mode": "min",
+    "scheduler_factor": 0.5,
+    "scheduler_patience": 10,
+    "scheduler_min_lr": 1e-06,
+    "early_stop_patience": 30,
+    "hard_neg_refresh": 5,
+    "hard_neg_pool_size": 20,
+    "hard_neg_ratio": 0.8,
+    "device": "cuda"
+  },
+  "data": {
+    "sim_strategies": 2000,
+    "sim_clients": 1000,
+    "train_clients": 800,
+    "val_clients": 200,
+    "train_pos_pairs": 800
+  },
+  "results": {
+    "best_epoch": 51,
+    "best_val_loss": 0.158551,
+    "best_val_acc": 0.87,
+    "final_train_loss": 0.222454,
+    "final_val_loss": 0.183859,
+    "final_val_acc": 0.87,
+    "real_strategies_encoded": 37,
+    "real_accounts_encoded": 3
+  }
+}

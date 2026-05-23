@@ -55,6 +55,9 @@ project/
 │── simulated_sequences.csv                   # [产出 Step5] 模拟序列
 │
 │── models/lstm_encoder.pt                    # [产出 Step6] 训练好的 LSTM 编码器
+│── models/training_config.json               # [产出 Step6] 训练参数 + 结果摘要
+│── models/training_history.csv               # [产出 Step6] 逐 epoch 训练日志
+│── models/runs/<timestamp>/                  # [产出 Step6] 每次训练的时间戳归档
 │── strategy_embeddings.npy                   # [产出 Step6] 37×128 策略向量
 │── account_embeddings.npy                    # [产出 Step6] 3×128 账户向量
 │── embedding_meta.json                       # [产出 Step6] 向量名映射
@@ -241,21 +244,25 @@ project/
 **做什么**：
 - 构建序列编码器：`Word2Vec Embedding(vocab_size×64) → BiLSTM(2层, hidden=128) → Mean Pooling → Linear(256→128) → L2 归一化`
 - 参数量随词表大小变化，Word2Vec 预训练权重初始化 Embedding 层
-- 对比学习 Triplet Loss：`max(0, d(anchor, pos) - d(anchor, neg) + 0.2)`
+- 对比学习 Triplet Loss：`max(0, d(anchor, pos) - d(anchor, neg) + 0.4)`（增大 margin 防止嵌入坍缩）
+- 困难负样本挖掘：每 5 epoch 用当前编码器选 top-20 hardest negatives，80% 概率从困难池采样
 - 训练时随机截取 512-token 子序列（数据增强）
-- 200 epochs, batch=128, Adam lr=0.0005, CosineAnnealingWarmRestarts 调度
-- 训练集/验证集按模拟客户 80/20 划分，验证集固定负样本消除随机性
+- 200 epochs, batch=128, Adam lr=0.0005, Weight Decay=1e-4, ReduceLROnPlateau 调度（factor=0.5, patience=10）
+- 训练集/验证集按模拟客户 80/20 划分，验证集固定负样本消除随机性。Early stopping patience=30
 
-**训练结果**：最佳 val_acc=0.82 (Epoch 13), val_loss=0.086, 共训练 43 epochs
+**训练结果**：最佳 val_acc=0.87 (Epoch 51), val_loss=0.159, 共训练 81 epochs（总参数 1.25M）
 
 **产出文件**：
 | 文件 | 内容 |
 |------|------|
 | `models/lstm_encoder.pt` | 训练好的编码器 (含配置+训练历史) |
+| `models/training_config.json` | 完整训练参数 + 结果摘要 |
+| `models/training_history.csv` | 逐 epoch 训练日志 |
+| `models/runs/<timestamp>/` | 每次训练的时间戳归档（含以上全部文件） |
 | `strategy_embeddings.npy` | 37×128 真实策略向量 |
 | `account_embeddings.npy` | 3×128 真实账户向量 |
 | `similarity_matrix.csv` | 3×37 余弦相似度矩阵 |
-| `training_history.csv` | 43 轮训练 loss/acc |
+| `training_history.csv` | 81 轮训练 loss/acc（根目录兼容 step7） |
 
 **脚本**：`step6_lstm_contrastive.py`
 
@@ -276,11 +283,11 @@ project/
 
 | 指标 | Phase 1 (特征工程) | Phase 2 (LSTM) |
 |------|-------------------|----------------|
-| 相似度范围 | -0.41 ~ 0.53 | -0.25 ~ 1.00 |
-| 相似度标准差 | 0.20 | 0.34 |
-| Spearman ρ (A/B/C) | — | 0.49 / 0.60 / 0.40 |
+| 相似度范围 | -0.41 ~ 0.53 | -0.71 ~ 1.00 |
+| 相似度标准差 | 0.20 | 0.45 |
+| Spearman ρ (A/B/C) | — | 0.34 / 0.47 / 0.34 |
 
-Phase 2 区分度约为 Phase 1 的 1.7 倍（按标准差），两阶段排名中等相关（ρ≈0.4~0.6），说明 LSTM 学习了互补的序列风格信号。
+Phase 2 区分度约为 Phase 1 的 2.2 倍（按标准差）。嵌入坍缩问题已通过增大 margin(0.2→0.4) + 困难负样本挖掘解决，各账户均出现显著负相似度值，策略排序可有效区分。两阶段排名中等相关（ρ≈0.34~0.47），说明 LSTM 学习了互补的序列风格信号，Phase 2 侧重的风格维度与 Phase 1 不同。
 
 **SHAP 解释口径**：SHAP 解释的是弱监督伪标签的生成逻辑。扩展后重点观察持仓周期、换手率、实现收益、最大回撤、市场状态、集中度和行业偏好的相对贡献。
 
@@ -288,11 +295,11 @@ Phase 2 区分度约为 Phase 1 的 1.7 倍（按标准差），两阶段排名�
 
 | 排名 | Account A | Account B | Account C |
 |------|-----------|-----------|-----------|
-| 1 | 煤炭周期优选动态轮动 | 动量趋势策略 | 综合拆分1 |
-| 2 | 成长红利量化选股 | 综合全 | 综合全 |
-| 3 | 杠铃 | 综合拆分1 | 综合拆分2 |
-| 4 | 旅游etf增强 | 行业etf增强 | 行业etf增强 |
-| 5 | 国企etf增强 | 朝花夕拾策略 | 朝花夕拾策略 |
+| 1 | 国企etf增强 | 动量趋势策略 | 综合拆分1 |
+| 2 | 成长红利量化选股 | 行业etf增强 | 综合全 |
+| 3 | 杠铃 | 综合拆分1 | 行业etf增强 |
+| 4 | 锤子策略 | 综合全 | 朝花夕拾策略 |
+| 5 | 申万动量 | 朝花夕拾策略 | 动量趋势策略 |
 
 **产出文件**：
 | 文件 | 内容 |
