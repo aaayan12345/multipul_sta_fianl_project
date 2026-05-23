@@ -13,59 +13,64 @@
 ```
 project/
 │
-├── README.md                          # 本文件
-├── .env.example                       # DeepSeek API Key 模板
+├── README.md                                 # 本文件
+├── .env.example                              # DeepSeek API Key 模板
+├── ML_INTEGRATION_GUIDE.md                   # Phase 1/2 接入说明（队友撰写）
 │
-├── 绩效1.xlsx                         # 原始数据：12 个策略交易记录
-├── 绩效2.xlsx                         # 原始数据：22 个策略交易记录
-├── 模拟账户A.xlsx                     # 原始数据：模拟账户 A 交易记录
-├── 模拟账户B.xlsx                     # 原始数据：模拟账户 B 交易记录
-├── 模拟账户C.xlsx                     # 原始数据：模拟账户 C 交易记录
+├── 量化策略绩效-1.xlsx                       # 原始数据：12 个策略交易记录
+├── 量化策略绩效-2.xlsx                       # 原始数据：22 个策略交易记录
+├── 带ETF的策略1.csv                          # 原始数据：国证2000ETF增强（GZ2000）
+├── 带ETF策略2.csv                            # 原始数据：创业板300ETF增强（CYB300）
+├── 朝花夕拾策略.csv                          # 原始数据：朝花夕拾策略（HX）
+├── 模拟账户A的记录.xlsx                      # 原始数据：模拟账户 A 交易记录
+├── 模拟账户B的记录.xlsx                      # 原始数据：模拟账户 B 交易记录
+├── 模拟账户C的记录.xlsx                      # 原始数据：模拟账户 C 交易记录
 │
-│── step1_data_loader.py               # Step 1: 数据加载与清洗
-│── step2_industry_mapping.py          # Step 2: 股票→行业映射
-│── step3_feature_extraction.py        # Step 3: 6 维特征提取
-│── step4_word2vec_pretrain.py         # Step 4: Token构建 + Word2Vec
-│── step5_simulate_data.py             # Step 5: 模拟数据生成
-│── step6_lstm_contrastive.py          # Step 6: LSTM编码器 + 对比学习
-│── step7_evaluation.py                # Step 7: 匹配评估 + 归因分析
+│── step1_data_loader.py                      # Step 1: 数据加载与清洗
+│── step2_industry_mapping.py                 # Step 2: 股票→行业映射
+│── step3_feature_extraction.py               # Step 3: 10 维特征提取
+│── step4_word2vec_pretrain.py                # Step 4: 多维Token构建 + Word2Vec
+│── step5_simulate_data.py                    # Step 5: 模拟数据生成
+│── step6_lstm_contrastive.py                 # Step 6: LSTM编码器 + 对比学习
+│── step7_evaluation.py                       # Step 7: 匹配评估 + 归因分析
 │
-│── clean_strategies.csv               # [产出 Step1] 清洗后策略交易记录
-│── clean_accounts.csv                 # [产出 Step1] 清洗后账户交易记录
-│── stock_industry_mapping.csv         # [产出 Step2] 股票代码→申万行业映射
-│── stock_industry_mapping_review.csv  # [人工校验] review_industry 覆盖原 industry
-│── strategy_features.csv/json         # [产出 Step3] 34 策略特征向量
-│── account_features.csv/json          # [产出 Step3] 3 账户特征向量
+│── clean_strategies.csv                      # [产出 Step1] 清洗后策略交易记录
+│── clean_accounts.csv                        # [产出 Step1] 清洗后账户交易记录
+│── stock_industry_mapping.csv                # [产出 Step2] 股票代码→申万行业映射
+│── stock_industry_mapping_review.csv         # [人工校验] review_industry 覆盖原 industry
+│── stock_industry_mapping_priority_review.csv# [人工校验] 优先级审核版
+│── strategy_features.csv/json                # [产出 Step3] 37 策略特征向量
+│── account_features.csv/json                 # [产出 Step3] 3 账户特征向量
 │
-│── token_vocab.json                   # [产出 Step4] Token→ID 映射 (221 tokens)
-│── word2vec_embeddings.npy            # [产出 Step4] 221×64 词向量矩阵
-│── tokenized_sequences.pkl            # [产出 Step4] Token ID 序列
-│── token_sequences.csv                # [产出 Step4] 可读版序列
-│── word2vec_model.pt                  # [产出 Step4] PyTorch 模型权重
+│── token_vocab.json                          # [产出 Step4] Token→ID 映射 (~19K tokens)
+│── word2vec_embeddings.npy                   # [产出 Step4] vocab×64 词向量矩阵
+│── tokenized_sequences.pkl                   # [产出 Step4] Token ID 序列
+│── token_sequences.csv                       # [产出 Step4] 可读版序列
+│── word2vec_model.pt                         # [产出 Step4] PyTorch 模型权重
 │
-│── simulated_strategies_features.csv  # [产出 Step5] 500 模拟策略特征
-│── simulated_accounts_features.csv    # [产出 Step5] 200 模拟客户特征
-│── simulated_data.pkl                 # [产出 Step5] 完整模拟数据
-│── train_pairs.csv                    # [产出 Step5] 1000 条训练标签
-│── simulated_sequences.csv            # [产出 Step5] 模拟序列
+│── simulated_strategies_features.csv         # [产出 Step5] 2000 模拟策略特征
+│── simulated_accounts_features.csv           # [产出 Step5] 1000 模拟客户特征
+│── simulated_data.pkl                        # [产出 Step5] 完整模拟数据
+│── train_pairs.csv                           # [产出 Step5] 6000 条训练标签
+│── simulated_sequences.csv                   # [产出 Step5] 模拟序列
 │
-│── models/lstm_encoder.pt             # [产出 Step6] 训练好的 LSTM 编码器
-│── strategy_embeddings.npy            # [产出 Step6] 34×128 策略向量
-│── account_embeddings.npy             # [产出 Step6] 3×128 账户向量
-│── embedding_meta.json                # [产出 Step6] 向量名映射
-│── training_history.csv               # [产出 Step6] 训练 loss/acc 日志
+│── models/lstm_encoder.pt                    # [产出 Step6] 训练好的 LSTM 编码器
+│── strategy_embeddings.npy                   # [产出 Step6] 37×128 策略向量
+│── account_embeddings.npy                    # [产出 Step6] 3×128 账户向量
+│── embedding_meta.json                       # [产出 Step6] 向量名映射
+│── training_history.csv                      # [产出 Step6] 训练 loss/acc 日志
 │
-│── similarity_matrix.csv              # [产出 Step6] 3×34 匹配相似度矩阵
-│── matching_phase1_features.csv       # [产出 Step7] Phase 1 特征匹配矩阵
-│── matching_phase2_lstm.csv           # [产出 Step7] Phase 2 LSTM 匹配矩阵
-│── final_recommendations.csv          # [产出 Step7] 综合推荐 Top-5
-│── shap_analysis.json                 # [产出 Step7] SHAP 特征归因结果
+│── similarity_matrix.csv                     # [产出 Step6] 3×37 匹配相似度矩阵
+│── matching_phase1_features.csv              # [产出 Step7] Phase 1 特征匹配矩阵
+│── matching_phase2_lstm.csv                  # [产出 Step7] Phase 2 LSTM 匹配矩阵
+│── final_recommendations.csv                 # [产出 Step7] 综合推荐 Top-5
+│── shap_analysis.json                        # [产出 Step7] SHAP 特征归因结果
 │
-│── _step1_result.txt                  # Step 1 运行摘要
-│── _step2_final.txt                   # Step 2 运行摘要
-│── _step2_test_noapi.py               # Step 2 纯规则测试版
+│── _step1_result.txt                         # Step 1 运行摘要
+│── _step2_final.txt                          # Step 2 运行摘要
+│── _step2_test_noapi.py                      # Step 2 纯规则测试版
 │
-└── models/                            # 模型保存目录
+└── models/                                   # 模型保存目录
 ```
 
 ---
@@ -74,12 +79,12 @@ project/
 
 ### Step 1 — 数据加载与清洗
 
-**做什么**：合并绩效1（12 个策略）和绩效2（22 个策略），共 34 个策略的 31,686 条交易记录；
-加载 3 个模拟账户 A/B/C 共 2,130 条交易记录。统一列名、处理缺失值、过滤无效记录。
+**做什么**：合并 `量化策略绩效-1.xlsx`（12 个策略）、`量化策略绩效-2.xlsx`（22 个策略）及 3 个 CSV 策略文件（国证2000ETF增强、创业板300ETF增强、朝花夕拾策略），共 37 个策略；加载 3 个模拟账户 A/B/C 交易记录。统一列名、处理缺失值、过滤无效记录。
 
 **关键处理**：
 - 列名映射统一（`datetime`, `stock_code`, `action`, `volume`, `price`, `amount`）
-- 排除无交易记录的 6 个策略（策略ETF, 策略etf2, 全球etf增强, 百亿etf等）
+- CSV 策略文件：`product_id`→`strategy_name`, `symbol`→`stock_code`, `side`→`action`, `qty`→`volume`, `trade_time`→`datetime`
+- 排除无交易记录的策略（策略ETF, 策略etf2, 全球etf增强, 百亿etf等）
 - 过滤非主动买卖事件（配售股份、中签下账、新股入账）
 - 股票代码标准化（去前缀 SHSE/SZSE，补零至 6 位）
 - 金额列类型转换（混合字符串/浮点数 → 统一 float）
@@ -88,8 +93,8 @@ project/
 **产出文件**：
 | 文件 | 内容 | 行数 |
 |------|------|------|
-| `clean_strategies.csv` | 清洗后策略交易记录 | 31,686 |
-| `clean_accounts.csv` | 清洗后账户交易记录 | 2,130 |
+| `clean_strategies.csv` | 清洗后 37 策略交易记录 | ~33K |
+| `clean_accounts.csv` | 清洗后 3 账户交易记录 | ~2.1K |
 
 **脚本**：`step1_data_loader.py`
 
@@ -97,20 +102,23 @@ project/
 
 ### Step 2 — 股票代码 → 申万一级行业映射
 
-**做什么**：将 2,708 只去重股票映射到 31 个申万一级行业，为 Step 3 行业偏好特征提供基础。
+**做什么**：将 ~2,850 只去重股票映射到 31 个申万一级行业，为 Step 3 行业偏好特征提供基础。
 
-**四轮分类策略**：
+**五轮分类策略**：
 
 | 轮次 | 方法 | 匹配数 | 说明 |
 |------|------|--------|------|
-| 第一轮 | 关键词规则 | 604 | 正则匹配股票名称（如"煤业"→煤炭、"半导体"→电子） |
-| 第二轮 | 策略名推断 | 312 | 从策略名推断行业（如"军工etf增强"→国防军工） |
-| 第三轮 | ETF代码段 | 0 | ETF代码前缀匹配（15xxxx/51xxxx 等→综合） |
-| 第四轮 | DeepSeek API | 1,792 | 批量查询未匹配 + 综合类股票（每批 30 只，100%成功率） |
+| 第一轮 | 关键词规则 | ~600 | 正则匹配股票名称（如"煤业"→煤炭、"半导体"→电子） |
+| 第二轮 | 策略名推断 | ~300 | 从策略名推断行业（如"军工etf增强"→国防军工） |
+| 第三轮 | ETF代码段 | — | ETF代码前缀匹配（15xxxx/51xxxx 等→综合） |
+| 第四轮 | DeepSeek API（未匹配） | ~99 | 批量查询规则未覆盖股票 |
+| 第五轮 | DeepSeek API（综合类） | ~1,800 | 对"综合"类宽基策略个股细分 |
 
-**最终覆盖**：2,708 只股票 100% 映射，0 只遗漏。
+**最终覆盖**：~2,850 只股票 100% 映射，0 只遗漏。
 
 **行业分布 Top 5**：电子(377)、医药生物(234)、基础化工(173)、机械设备(171)、计算机(167)
+
+**人工校验**：产出 `stock_industry_mapping_review.csv`，可通过 `review_industry` 列覆盖自动映射结果。
 
 **产出文件**：
 | 文件 | 内容 | 列 |
@@ -121,7 +129,7 @@ project/
 
 ---
 
-### Step 3 — 扩展交易风格特征提取
+### Step 3 — 扩展交易风格特征提取（10 维数值特征）
 
 **做什么**：把每个策略和账户的交易行为抽象为行业偏好 + 9 个可量化数值特征，构建固定维度的交易画像向量，作为弱监督匹配的主干。
 
@@ -151,11 +159,15 @@ project/
 | 集中度 HHI | 0.47 | 0.29 | 0.38 |
 | 买卖对称 | 0.54（净买） | 0.50（平衡） | 0.50（平衡） |
 | 波动偏好 | 0.07 | 0.13 | 0.04 |
+| 实现收益偏好 | 0.016 | 0.002 | ~0 |
+| 最大回撤 | 0.69 | 0.95 | ~0 |
+| 市场状态暴露 | 0.31 | 0.23 | ~0 |
+| 交易间隔 | 5.0 天 | 1.6 天 | ~0 天 |
 
 **产出文件**：
 | 文件 | 内容 |
 |------|------|
-| `strategy_features.csv` | 34 策略特征 |
+| `strategy_features.csv` | 37 策略特征 |
 | `strategy_features.json` | 同上 JSON 格式 |
 | `account_features.csv` | 3 账户特征 |
 | `account_features.json` | 同上 JSON 格式 |
@@ -229,21 +241,21 @@ project/
 **做什么**：
 - 构建序列编码器：`Word2Vec Embedding(vocab_size×64) → BiLSTM(2层, hidden=128) → Mean Pooling → Linear(256→128) → L2 归一化`
 - 参数量随词表大小变化，Word2Vec 预训练权重初始化 Embedding 层
-- 对比学习 Triplet Loss：`max(0, d(anchor, pos) - d(anchor, neg) + 0.5)`
+- 对比学习 Triplet Loss：`max(0, d(anchor, pos) - d(anchor, neg) + 0.2)`
 - 训练时随机截取 512-token 子序列（数据增强）
 - 200 epochs, batch=128, Adam lr=0.0005, CosineAnnealingWarmRestarts 调度
-- 训练集/验证集按模拟客户 80/20 划分
+- 训练集/验证集按模拟客户 80/20 划分，验证集固定负样本消除随机性
 
-**训练结果**：最佳 val_loss=0.301, val_acc 最高 92.5% (Epoch 40)
+**训练结果**：最佳 val_acc=0.82 (Epoch 13), val_loss=0.086, 共训练 43 epochs
 
 **产出文件**：
 | 文件 | 内容 |
 |------|------|
 | `models/lstm_encoder.pt` | 训练好的编码器 (含配置+训练历史) |
-| `strategy_embeddings.npy` | 34×128 真实策略向量 |
+| `strategy_embeddings.npy` | 37×128 真实策略向量 |
 | `account_embeddings.npy` | 3×128 真实账户向量 |
-| `similarity_matrix.csv` | 3×34 余弦相似度矩阵 |
-| `training_history.csv` | 50 轮训练 loss/acc |
+| `similarity_matrix.csv` | 3×37 余弦相似度矩阵 |
+| `training_history.csv` | 43 轮训练 loss/acc |
 
 **脚本**：`step6_lstm_contrastive.py`
 
@@ -264,9 +276,11 @@ project/
 
 | 指标 | Phase 1 (特征工程) | Phase 2 (LSTM) |
 |------|-------------------|----------------|
-| 相似度范围 | -0.30 ~ 0.40 | -0.81 ~ 1.00 |
-| 相似度标准差 | 0.17 | 0.60 |
-| Spearman ρ (A/B/C) | — | 0.72 / 0.40 / 0.44 |
+| 相似度范围 | -0.41 ~ 0.53 | -0.25 ~ 1.00 |
+| 相似度标准差 | 0.20 | 0.34 |
+| Spearman ρ (A/B/C) | — | 0.49 / 0.60 / 0.40 |
+
+Phase 2 区分度约为 Phase 1 的 1.7 倍（按标准差），两阶段排名中等相关（ρ≈0.4~0.6），说明 LSTM 学习了互补的序列风格信号。
 
 **SHAP 解释口径**：SHAP 解释的是弱监督伪标签的生成逻辑。扩展后重点观察持仓周期、换手率、实现收益、最大回撤、市场状态、集中度和行业偏好的相对贡献。
 
@@ -274,11 +288,11 @@ project/
 
 | 排名 | Account A | Account B | Account C |
 |------|-----------|-----------|-----------|
-| 1 | 煤炭周期优选动态轮动 | 行业etf增强 | 中证1000增强 |
-| 2 | 成长红利量化选股 | 动量趋势策略 | etf动量改 |
-| 3 | 杠铃 | 综合全 | 综合全 |
-| 4 | 化工ETF优选 | 综合拆分1 | 行业etf增强 |
-| 5 | 食品etf增强 | etf动量改 | 综合拆分2 |
+| 1 | 煤炭周期优选动态轮动 | 动量趋势策略 | 综合拆分1 |
+| 2 | 成长红利量化选股 | 综合全 | 综合全 |
+| 3 | 杠铃 | 综合拆分1 | 综合拆分2 |
+| 4 | 旅游etf增强 | 行业etf增强 | 行业etf增强 |
+| 5 | 国企etf增强 | 朝花夕拾策略 | 朝花夕拾策略 |
 
 **产出文件**：
 | 文件 | 内容 |
